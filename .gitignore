@@ -1,0 +1,125 @@
+# --- Python genel
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+*.dylib
+
+# --- Paketleme / dağıtım
+.Python
+build/
+dist/
+eggs/
+.eggs/
+wheels/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+share/python-wheels/
+MANIFEST
+
+# --- Sanal ortamlar
+.venv/
+venv/
+ENV/
+env/
+.conda/
+.venv*/
+.local/
+
+# --- PyInstaller
+*.spec
+
+# --- Test / coverage / lint
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+.dmypy/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# --- Jupyter
+.ipynb_checkpoints/
+
+# --- IDE / Editor
+.vscode/
+.idea/
+*.iml
+*.code-workspace
+
+# --- OS/Temp
+.DS_Store
+.DS_Store?
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+
+# --- Log & runtime
+logs/
+*.log
+*.pid
+*.pid.lock
+celerybeat-schedule
+celerybeat.pid
+
+# --- Ortam değişkenleri & sırlar
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.pfx
+
+# --- Yerel veri (SQLite vb.)
+data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+
+# PostgreSQL dumps / logs
+db_dumps/
+*.dump
+*.backup
+pg_restore.log
+
+# Eğer repo içinde volume map'lediysen
+.pgdata/
+.postgres-data/
+
+# --- Ops/Monitoring yerel veri dizinleri (konfig değil, sadece runtime data)
+.prom-data/
+.loki-data/
+.grafana-data/
+.ops-data/
+
+# --- Statik build çıktıları (ileride eklersen)
+static/build/
+static/dist/
+
+# --- Node (ileride küçük bir FE demo eklenirse)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
