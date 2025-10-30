@@ -42,8 +42,9 @@ def _env_int(key: str, default: int) -> int:
 def _inc_metric_suspicious(ip_hash: str, reason: str) -> None:
     # İçe import: import-time hatalarını önler
     try:
-        from app.metrics.registry import SUSPICIOUS_REQUESTS
-        SUSPICIOUS_REQUESTS.labels(ip_hash=ip_hash, reason=reason).inc()
+        from app.metrics import SUSPICIOUS_REQUESTS
+        # Tek label şeması: client
+        SUSPICIOUS_REQUESTS.labels(client=ip_hash).inc()
     except Exception:
         pass
 
@@ -65,11 +66,11 @@ def _create_event(request: Request, ip_hash: str, reason: str, severity: int = 1
         # print(f"[monitor] event yazılamadı: {reason}")
         pass
 
-def _ban_ip(ip_hash: str, seconds: int) -> None:
+def _quarantine_ip(ip_hash: str, seconds: int) -> None:
+    """Monitor sadece karantinayı işaretler; 403'ü QuarantineMiddleware verir."""
     try:
-        # İçe import: circular import riskini düşürür.
-        from app.security.middleware_quarantine import ban_ip_hash
-        ban_ip_hash(ip_hash, seconds=seconds)
+        from app.security.middleware_quarantine import add_quarantine
+        add_quarantine(ip_hash)  # süre, middleware_quarantine içindeki settings’e göre uygulanır
     except Exception:
         pass
 
@@ -128,7 +129,7 @@ class MonitorMiddleware(BaseHTTPMiddleware):
             _create_event(request, ip_h, reason="rate_abuse", severity=2)
 
             if self.quarantine_enabled:
-                _ban_ip(ip_h, self.quarantine_seconds)
+                _quarantine_ip(ip_h, self.quarantine_seconds)
 
         # İsteği devam ettir
         response: Response = await call_next(request)

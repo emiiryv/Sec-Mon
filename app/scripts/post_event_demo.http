@@ -1,0 +1,16 @@
+### Manuel event insert (dev/demo)
+POST http://127.0.0.1:8000/events
+Content-Type: application/json
+
+{
+  "ip_hash": "demo1234abcd5678",
+  "ua": "curl/8.0 demo",
+  "path": "/manual",
+  "reason": "manual_insert",
+  "score": 1.5,
+  "severity": 1,
+  "meta": {"note": "demo http file"}
+}
+
+###
+GET http://127.0.0.1:8000/stats/events?limit=5

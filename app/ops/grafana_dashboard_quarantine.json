@@ -1,0 +1,32 @@
+{
+    "title": "Sec-Mon Quarantine",
+    "panels": [
+      {
+        "type": "gauge",
+        "title": "Quarantined IPs",
+        "gridPos": {"x":0,"y":0,"w":8,"h":8},
+        "targets": [
+          {"expr": "quarantined_ip_count"}
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Suspicious Requests",
+        "gridPos": {"x":8,"y":0,"w":8,"h":8},
+        "targets": [
+          {"expr": "sum(increase(suspicious_requests_total[1m]))"}
+        ]
+      },
+      {
+        "type": "timeseries",
+        "title": "Quarantined Blocks",
+        "gridPos": {"x":0,"y":8,"w":16,"h":8},
+        "targets": [
+          {"expr": "sum(increase(quarantined_blocks_total[1m]))"}
+        ]
+      }
+    ],
+    "timezone": "",
+    "schemaVersion": 38,
+    "version": 1
+  }

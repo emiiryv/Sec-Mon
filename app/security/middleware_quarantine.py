@@ -4,29 +4,29 @@ import time
 import hashlib
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import PlainTextResponse
-from prometheus_client import Counter, Gauge
+from typing import Optional, Dict, Any, Dict as _Dict
+from app.db.session import SessionLocal
+from app.repositories.events import insert_event
 
-# ---- Prometheus metrics (tam da grep ettiğin isimlerle) ----
-SUSPICIOUS_REQUESTS = Counter(
-    "suspicious_requests_total",
-    "Requests observed by quarantine middleware",
-    ["client"],
-)
-QUARANTINED_BLOCKS = Counter(
-    "quarantined_blocks_total",
-    "Requests blocked by quarantine middleware",
-    ["client"],
-)
-QUARANTINED_IP_COUNT = Gauge(
-    "quarantined_ip_count",
-    "Currently quarantined unique clients",
-)
+
+# Process-local shadow counter (pytest/sade parserlar için deterministik toplama)
+BLOCKS_SHADOW_TOTAL: int = 0
+
+def _inc_shadow_blocks(n: int = 1) -> None:
+    """Process-local toplamı güvenli biçimde artır."""
+    global BLOCKS_SHADOW_TOTAL
+    BLOCKS_SHADOW_TOTAL += n
+
+
+# --- Metriklere erişim için çoklu-fallback ---
+try:
+    # Eğer singleton'lı erişim fonksiyonumuz varsa onu kullanacağız
+    from app.metrics import get_metrics as _get_metrics  # type: ignore
+except Exception:
+    _get_metrics = None  # type: ignore
 
 def _env_flag(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).lower() in ("1", "true", "yes", "on")
-
-def _now() -> float:
-    return time.time()
 
 class QuarantineMiddleware(BaseHTTPMiddleware):
     """
@@ -34,7 +34,7 @@ class QuarantineMiddleware(BaseHTTPMiddleware):
       - RATE_WINDOW_SECONDS içinde RATE_THRESHOLD'u aşan client 'ban' süresi kadar bloklanır.
       - QUARANTINE_EXCLUDE_PATHS ile belirli path'ler tamamen bypass edilir (örn. /metrics).
     """
-    def __init__(self, app):
+    def __init__(self, app, *, metrics: Optional[Dict[str, Any]] = None, **kwargs):
         super().__init__(app)
         self.enabled = _env_flag("QUARANTINE_ENABLED", "false")
         self.block_status = int(os.getenv("QUARANTINE_BLOCK_STATUS", "403"))
@@ -51,10 +51,59 @@ class QuarantineMiddleware(BaseHTTPMiddleware):
         # In-memory state: key -> {"w": window_start_ts, "c": count, "ban": banned_until_ts}
         self.state: dict[str, dict] = {}
 
-        # Metriklerin görünmesi için en az bir child oluştur (0 arttırma yeterli)
-        SUSPICIOUS_REQUESTS.labels(client="init").inc(0)
-        QUARANTINED_BLOCKS.labels(client="init").inc(0)
-        QUARANTINED_IP_COUNT.set(0)
+        # ---- Metrics wiring (Dependency Injection) ----
+        # 3 kademeli sağlam kablolama:
+        # 1) app.state'ten, 2) get_metrics() ile singleton'dan, 3) doğrudan sayaç import
+        wired: Optional[_Dict[str, Any]] = None
+
+        # 1) app.state üzerinden verilmişse
+        if metrics is None:
+            if hasattr(app.state, "secmon_metrics"):
+                wired = getattr(app.state, "secmon_metrics")
+            elif hasattr(app.state, "metrics"):
+                wired = getattr(app.state, "metrics")
+
+        # 2) erişim fonksiyonundan çek
+        if wired is None and metrics is None and _get_metrics is not None:
+            try:
+                wired = _get_metrics()
+            except Exception:
+                wired = None
+
+        # 3) son çare: direkt tekil sayaç nesnelerini import et
+        if wired is None and metrics is None:
+            try:
+                from app.metrics import (  # type: ignore
+                    METRICS_REGISTRY as _REG,
+                    SUSPICIOUS_REQUESTS as _SUS,
+                    QUARANTINED_BLOCKS as _BLK,
+                    QUARANTINED_IP_COUNT as _IPC,
+                )
+                wired = {"registry": _REG, "suspicious": _SUS, "blocked": _BLK, "ipcount": _IPC}
+            except Exception:
+                wired = None
+
+        # Dışarıdan parametre geldiyse o öncelikli
+        if metrics is not None:
+            wired = metrics
+
+        self._registry = wired["registry"] if wired else None
+        self._suspicious = wired["suspicious"] if wired else None
+        self._blocked = wired["blocked"] if wired else None
+        self._ipcount = wired["ipcount"] if wired else None
+
+        # Debug görünürlüğü
+        if self.debug:
+            print(
+                f"[quarantine] metrics wired: "
+                f"blocked={'ok' if self._blocked else 'none'}, "
+                f"suspicious={'ok' if self._suspicious else 'none'}, "
+                f"ipcount={'ok' if self._ipcount else 'none'}"
+            )
+
+    def _now(self) -> float:
+        import time
+        return time.time()
 
     def _is_excluded(self, path: str) -> bool:
         for p in self.excluded_paths:
@@ -74,10 +123,21 @@ class QuarantineMiddleware(BaseHTTPMiddleware):
         # fallback
         return (request.client.host if request.client and request.client.host else "unknown")
 
-    def _update_gauge(self, now_ts: float) -> None:
-        # Şu an banlı olan benzersiz client sayısı
-        active = sum(1 for rec in self.state.values() if rec.get("ban", 0) > now_ts)
-        QUARANTINED_IP_COUNT.set(active)
+    def _update_gauge(self, now_ts: float, touch_key: str | None = None):
+        active = 0
+        for k, v in self.state.items():
+            ban_until = v.get("ban", 0)
+            if ban_until > now_ts:
+                active += 1
+            elif ban_until > 0 and ban_until <= now_ts:
+                # süre dolmuşsa temizle
+                v["ban"] = 0
+        if self._ipcount is not None:
+            try:
+                self._ipcount.set(active)
+            except Exception:
+                if self.debug:
+                    print("[quarantine] gauge set failed (ignored)")
 
     async def dispatch(self, request, call_next):
         path = request.url.path
@@ -96,19 +156,59 @@ class QuarantineMiddleware(BaseHTTPMiddleware):
             # (İstersen burada da block davranışı tanımlayabilirsin)
             pass
 
-        now_ts = _now()
+        now_ts = self._now()
         client_ip = self._client_ip(request)
         key = self._client_key(client_ip)
 
         rec = self.state.get(key, {"w": now_ts, "c": 0, "ban": 0.0})
 
+        # Her isteği gözlemle (counter garanti)
+        if self._suspicious is not None:
+            try:
+                self._suspicious.labels(client=key).inc()
+            except Exception:
+                if self.debug:
+                    print("[quarantine] suspicious inc failed (ignored)")
+
         # 4) Ban kontrol
         if rec["ban"] > now_ts:
             if self.debug:
                 print(f"[quarantine] BLOCK {key} -> {self.block_status}")
-            QUARANTINED_BLOCKS.labels(client=key).inc()
-            self._update_gauge(now_ts)
-            return PlainTextResponse(f"Quarantined ({key})", status_code=self.block_status)
+            # deterministik: blok anında sayaç artır
+            if self._blocked is not None:
+                try:
+                    self._blocked.labels(client=key).inc()
+                except Exception:
+                    if self.debug:
+                        print("[quarantine] blocked inc failed (ignored)")
+            # shadow counter'ı artır
+            try:
+                _inc_shadow_blocks()
+            except Exception:
+                pass
+            self._update_gauge(now_ts, touch_key=key)
+
+            # DB event write (blocked request while already banned)
+            try:
+                async with SessionLocal() as s:
+                    await insert_event(
+                        s,
+                        ip_hash=key,
+                        ua=request.headers.get("user-agent"),
+                        path=str(request.url.path),
+                        reason="quarantine_block",
+                        score=None,
+                        severity=2,
+                        meta={"status": self.block_status, "phase": "already_banned"},
+                    )
+                    await s.commit()
+            except Exception as e:
+                if self.debug:
+                    print(f"[quarantine] event write failed: {e}")
+
+            resp = PlainTextResponse("Blocked by quarantine", status_code=self.block_status)
+            resp.headers["X-Quarantine"] = "1"
+            return resp
 
         # 5) Pencere ve sayaç
         if now_ts - rec["w"] <= self.win_seconds:
@@ -117,9 +217,6 @@ class QuarantineMiddleware(BaseHTTPMiddleware):
             rec["w"] = now_ts
             rec["c"] = 1
 
-        # Metrik
-        SUSPICIOUS_REQUESTS.labels(client=key).inc()
-
         # 6) Eşik aşıldı mı?
         if rec["c"] > self.threshold:
             rec["ban"] = now_ts + self.ban_seconds
@@ -127,9 +224,47 @@ class QuarantineMiddleware(BaseHTTPMiddleware):
                 print(f"[quarantine] BAN set for {key} for {self.ban_seconds}s")
                 print(f"[quarantine] BLOCK {key} -> {self.block_status}")
             self.state[key] = rec
-            QUARANTINED_BLOCKS.labels(client=key).inc()
-            self._update_gauge(now_ts)
-            return PlainTextResponse(f"Quarantined ({key})", status_code=self.block_status)
+            # deterministik: blok anında sayaç artır
+            if self._blocked is not None:
+                try:
+                    self._blocked.labels(client=key).inc()
+                except Exception:
+                    if self.debug:
+                        print("[quarantine] blocked inc failed (ignored)")
+            # shadow counter'ı artır
+            try:
+                _inc_shadow_blocks()
+            except Exception:
+                pass
+            self._update_gauge(now_ts, touch_key=key)
+
+            # DB event write (ban just set)
+            try:
+                async with SessionLocal() as s:
+                    await insert_event(
+                        s,
+                        ip_hash=key,
+                        ua=request.headers.get("user-agent"),
+                        path=str(request.url.path),
+                        reason="quarantine_block",
+                        score=None,
+                        severity=2,
+                        meta={
+                            "status": self.block_status,
+                            "phase": "ban_set",
+                            "count": rec["c"],
+                            "threshold": self.threshold,
+                            "window_seconds": self.win_seconds,
+                        },
+                    )
+                    await s.commit()
+            except Exception as e:
+                if self.debug:
+                    print(f"[quarantine] event write failed: {e}")
+
+            resp = PlainTextResponse("Blocked by quarantine", status_code=self.block_status)
+            resp.headers["X-Quarantine"] = "1"
+            return resp
 
         self.state[key] = rec
         # gauge'i nadiren de olsa güncellemek faydalı (maliyet çok düşük)
