@@ -10,7 +10,7 @@ from app.security.middleware_quarantine import QuarantineMiddleware
 from app.security.middleware_monitor import MonitorMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from app.api.routes_events import router as events_router, stats_router
+from app.api.routes_events import router as events_router
 from app.db.session import get_session, SessionLocal
 from app.services.retention import run_retention
 
@@ -98,7 +98,11 @@ try:
 except Exception:
     pass
 app.include_router(events_router)
-app.include_router(stats_router)
+try:
+    from app.api.routes_stats import router_admin as stats_admin_router
+    app.include_router(stats_admin_router)
+except Exception:
+    pass
 
 app.include_router(debug_router)
 
