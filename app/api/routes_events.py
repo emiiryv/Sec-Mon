@@ -1,6 +1,6 @@
 # app/api/routes_events.py
 from __future__ import annotations
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Any
 
 from fastapi import APIRouter, Depends, Query, HTTPException, Request, status
@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
 from app.repositories.events import list_events, daily_counts, top_reason_counts, top_paths
-import time
+import time, inspect
 import app.repositories.events as repo  # module import for insert/search helpers
 
 router = APIRouter(prefix="/events", tags=["events"])
@@ -52,22 +52,37 @@ def _parse_ts(s: Optional[str]):
         return None
     # float epoch
     try:
-        from datetime import datetime
         f = float(s)
-        return datetime.fromtimestamp(f)
+        # timezone-aware UTC üret
+        return datetime.fromtimestamp(f, tz=timezone.utc)
     except Exception:
         pass
     # ISO
     try:
-        from datetime import datetime
         for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S"):
             try:
-                return datetime.strptime(s, fmt)
+                dt = datetime.strptime(s, fmt)
+                # naive ise UTC varsay
+                return dt.replace(tzinfo=timezone.utc)
             except Exception:
                 continue
     except Exception:
         pass
     return None
+
+async def _call_repo(fn, *args, **kwargs):
+    """
+    Repo fonksiyonu async ise await, sync ise direkt çağır.
+    Ayrıca fn imzasında olmayan keyword'leri filtrele.
+    """
+    try:
+        sig = inspect.signature(fn)
+        fkwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+    except Exception:
+        fkwargs = kwargs
+    if inspect.iscoroutinefunction(fn):
+        return await fn(*args, **fkwargs)
+    return fn(*args, **fkwargs)
 
 @router.get("", response_model=EventsPage)
 async def get_events(
@@ -101,15 +116,37 @@ async def create_event(payload: EventIn, session: AsyncSession = Depends(get_ses
         raise HTTPException(status_code=500, detail="insert_event() not available")
     ts = float(payload.ts or time.time())
     try:
-        new_id = await repo.insert_event(
-            session,
+        # Repo isim farklarını tolere et: client -> ip_hash, ts -> ts|timestamp
+        kw = dict(
             client=payload.client,
+            ip_hash=payload.client,   # her iki isim de denensin
             kind=payload.kind,
             reason=payload.reason,
             path=payload.path,
             meta=payload.meta or {},
             ts=ts,
+            timestamp=ts,
+            ua=None,
+            score=None,
+            severity=None,
         )
+        # Şema uyumluluğu: bazı kurulumlarda NOT NULL olabilir
+        if kw.get("severity") is None:
+            kw["severity"] = 0
+        if kw.get("score") is None:
+            kw["score"] = 0.0
+        if kw.get("ua") is None:
+            kw["ua"] = ""
+        fn = getattr(repo, "insert_event", None)
+        if not fn:
+            raise HTTPException(status_code=500, detail="insert_event not available")
+        new_id = await _call_repo(fn, session, **kw)
+        # Insert'i kalıcı yap
+        try:
+            await session.commit()
+        except Exception as ce:
+            await session.rollback()
+            raise HTTPException(status_code=500, detail=f"commit failed: {ce}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"insert failed: {e}")
     return OkCreated(ok=True, id=int(new_id) if isinstance(new_id, int) else None)
@@ -134,19 +171,38 @@ async def search_events(
     try:
         start_ts = _parse_ts(since)
         end_ts = _parse_ts(until)
-        ip_hash = client  # client -> ip_hash
-        total, rows = await list_events(
-            session,
+        # client/ip_hash ve tarih isim farklarını tolere et
+        kw = dict(
+            limit=int(limit),
+            offset=int(offset),
+            since=start_ts,
+            until=end_ts,
             start_ts=start_ts,
             end_ts=end_ts,
+            client=client,
+            ip_hash=client,
+            kind=kind,
             reason=reason,
             path=path,
-            ip_hash=ip_hash,
-            limit=limit,
-            offset=offset,
         )
-        items = [EventOut.model_validate(r.__dict__).model_dump() for r in rows]
-        return {"items": items, "limit": limit, "offset": offset, "count": len(items), "total": total}
+        fn = getattr(repo, "list_events", None) or getattr(repo, "search_events", None)
+        if not fn:
+            raise HTTPException(status_code=500, detail="list_events/search_events not available")
+        res = await _call_repo(fn, session, **kw)
+        # Hem (total, rows) hem de sadece rows dönen imzaları destekle
+        if isinstance(res, tuple) and len(res) == 2:
+            total, rows = res
+        else:
+            rows = res or []
+            total = len(rows)
+        items = []
+        for r in rows:
+            try:
+                items.append(EventOut.model_validate(getattr(r, "__dict__", r)).model_dump())
+            except Exception:
+                # dict ya da raw satır olabilir
+                items.append(r)
+        return {"items": items, "limit": limit, "offset": offset, "count": len(items), "total": int(total)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"search failed: {e}")
 

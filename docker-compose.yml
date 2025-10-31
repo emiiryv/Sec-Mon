@@ -3,15 +3,15 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: secmon
-      POSTGRES_PASSWORD: secmon
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: admin123
       POSTGRES_DB: secmon
     ports:
       - "55432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U secmon -d secmon"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d admin123"]
       interval: 5s
       timeout: 3s
       retries: 20

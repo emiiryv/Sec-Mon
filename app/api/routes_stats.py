@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 from fastapi import APIRouter, Depends, Query, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.persistence.db import get_session
@@ -10,7 +12,7 @@ from typing import Optional
 
 try:
     from app.repositories import events as repo
-    from app.db import get_db
+    from app.db.session import get_session as get_db
 except Exception as _e:  # pragma: no cover
     repo = None  # type: ignore
     get_db = None  # type: ignore
@@ -39,6 +41,16 @@ def _parse_ts(s: Optional[str]) -> Optional[float]:
         pass
     return None
 
+async def _call_repo(fn, *args, **kwargs):
+    try:
+        sig = inspect.signature(fn)
+        fkwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+    except Exception:
+        fkwargs = kwargs
+    if inspect.iscoroutinefunction(fn):
+        return await fn(*args, **fkwargs)
+    return fn(*args, **fkwargs)
+
 # Basit admin guard: local/dev için X-Debug-Admin: 1
 async def require_admin(request: Request):
     if request.headers.get("X-Debug-Admin") == "1":
@@ -63,11 +75,17 @@ async def top_reasons(limit: int = 10, since: Optional[str] = None, until: Optio
     if repo is None or get_db is None:
         raise HTTPException(status_code=500, detail="Repository/DB not wired")
     try:
-        rows = repo.top_reason_counts(
+        fn = getattr(repo, "top_reason_counts", None) or getattr(repo, "top_reasons", None)
+        if not fn:
+            raise RuntimeError("top_reason_counts/top_reasons not found in repository")
+        rows = await _call_repo(
+            fn,
             db,
             limit=max(1, min(int(limit), 1000)),
             since=_parse_ts(since),
             until=_parse_ts(until),
+            start_ts=_parse_ts(since),
+            end_ts=_parse_ts(until),
         )
         return {"items": rows}
     except Exception as e:  # pragma: no cover
@@ -79,11 +97,17 @@ async def top_paths(limit: int = 10, since: Optional[str] = None, until: Optiona
     if repo is None or get_db is None:
         raise HTTPException(status_code=500, detail="Repository/DB not wired")
     try:
-        rows = repo.top_paths(
+        fn = getattr(repo, "top_paths", None) or getattr(repo, "top_path_counts", None)
+        if not fn:
+            raise RuntimeError("top_paths/top_path_counts not found in repository")
+        rows = await _call_repo(
+            fn,
             db,
             limit=max(1, min(int(limit), 1000)),
             since=_parse_ts(since),
             until=_parse_ts(until),
+            start_ts=_parse_ts(since),
+            end_ts=_parse_ts(until),
         )
         return {"items": rows}
     except Exception as e:  # pragma: no cover
