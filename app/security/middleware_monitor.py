@@ -9,8 +9,16 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from starlette.responses import Response
+from app.metrics import SUSPICIOUS_REQUESTS
+from app.security.ip_utils import get_client_info, is_allowlisted
 # Alerts (optional, new path)
 from app.alerts import AlertManager, make_payload  # noqa: F401
+
+# Quarantine paylaşılan ban haritası (metrics fallback bu map'i okur)
+try:
+    from app.security.middleware_quarantine import _quarantine as _QMAP  # type: ignore
+except Exception:
+    _QMAP = None
 
 __all__ = ["MonitorMiddleware"]
 
@@ -46,7 +54,7 @@ def _env_int(key: str, default: int) -> int:
 def _inc_metric_suspicious(ip_hash: str, reason: str) -> None:
     # İçe import: import-time hatalarını önler
     try:
-        from app.metrics import SUSPICIOUS_REQUESTS
+        from app.metrics import SUSPICIOUS_REQUESTS  # local import to avoid startup errors
         # Tek label şeması: client
         SUSPICIOUS_REQUESTS.labels(client=ip_hash).inc()
     except Exception:
@@ -101,14 +109,21 @@ class MonitorMiddleware(BaseHTTPMiddleware):
         self.quarantine_seconds = _env_int("QUARANTINE_BAN_SECONDS", 600)
 
     async def dispatch(self, request: Request, call_next):
-        ip = _client_ip(request)
-        ip_h = _ip_hash(ip)
+        ip, ip_h = get_client_info(request)
         ua = request.headers.get("User-Agent", "")
 
         # state'e yazalım ki QuarantineMiddleware tekrar hesaplamak zorunda kalmasın
         request.state.client_ip = ip
         request.state.ip_hash = ip_h
         request.state.monitor = {}
+
+        # Allowlist bypass: trusted clients proceed without monitoring/quarantine
+        try:
+            if is_allowlisted(ip, ip_h):
+                return await call_next(request)
+        except Exception:
+            # Fail-open for allowlist check errors
+            pass
 
         # 1) UA kontrolü
         suspicious = False
@@ -133,7 +148,20 @@ class MonitorMiddleware(BaseHTTPMiddleware):
             _create_event(request, ip_h, reason="rate_abuse", severity=2)
 
             if self.quarantine_enabled:
-                _quarantine_ip(ip_h, self.quarantine_seconds)
+                # Mevcut davranış: dahili işaretleme (varsa)
+                try:
+                    _quarantine_ip(ip_h, self.quarantine_seconds)
+                except Exception:
+                    # Yardımcı yoksa sorun değil; paylaşılan haritaya doğrudan yazacağız.
+                    pass
+
+                # Kesin çözüm: paylaşılan quarantine map'ine daima yaz
+                try:
+                    if _QMAP is not None:
+                        _QMAP[ip_h] = time.time() + float(self.quarantine_seconds)
+                except Exception:
+                    pass
+
                 # Alert (fire-and-forget): rate abuse eşiği aşıldı
                 try:
                     alerts = getattr(request.app.state, "alerts", None)

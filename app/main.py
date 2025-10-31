@@ -75,6 +75,16 @@ def health():
 # from app.api.routes_events import router as events_router
 app.include_router(metrics_router)
 try:
+    from app.api.routes_debug_banlist import router as debug_banlist_router
+    app.include_router(debug_banlist_router)
+except Exception:
+    pass
+try:
+    from app.api.routes_debug_whoami import router as debug_whoami_router
+    app.include_router(debug_whoami_router)
+except Exception:
+    pass
+try:
     from app.api.routes_debug_alerts import router as debug_alerts_router
     app.include_router(debug_alerts_router)
 except Exception:

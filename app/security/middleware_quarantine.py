@@ -5,6 +5,8 @@ import hashlib
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import PlainTextResponse
 from app.alerts import make_payload
+from app.security.ip_utils import get_client_info, is_allowlisted
+from time import time
 import asyncio
 from typing import Optional, Dict, Any, Dict as _Dict
 from app.db.session import SessionLocal
@@ -18,6 +20,9 @@ def _inc_shadow_blocks(n: int = 1) -> None:
     """Process-local toplamı güvenli biçimde artır."""
     global BLOCKS_SHADOW_TOTAL
     BLOCKS_SHADOW_TOTAL += n
+
+# Aktif banları (expires ts) process-local olarak da izleyelim
+_quarantine: Dict[str, float] = {}
 
 
 # --- Metriklere erişim için çoklu-fallback ---
@@ -144,6 +149,10 @@ class QuarantineMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         path = request.url.path
 
+        now_ts = time()
+        # expire olanları temizle ve gauge’i düzelt
+        self._prune(now_ts)
+
         # 1) Exclude path'ler: karantinayı tamamen bypass et
         if self._is_excluded(path):
             return await call_next(request)
@@ -158,11 +167,27 @@ class QuarantineMiddleware(BaseHTTPMiddleware):
             # (İstersen burada da block davranışı tanımlayabilirsin)
             pass
 
-        now_ts = self._now()
-        client_ip = self._client_ip(request)
-        key = self._client_key(client_ip)
+        # now_ts = self._now()  # removed as per instructions
+
+        # client_ip = self._client_ip(request)
+        # key = self._client_key(client_ip)
+        # replaced with:
+        # trusted proxy & hash
+        ip, key = get_client_info(request)
+        # allowlist ise tamamen bypass
+        if is_allowlisted(ip, key):
+            return await call_next(request)
 
         rec = self.state.get(key, {"w": now_ts, "c": 0, "ban": 0.0})
+
+        # Monitor’ün yazdığı harici ban’ı state’e merge et (varsa)
+        try:
+            ext_ban = float(_quarantine.get(key, 0.0))
+        except Exception:
+            ext_ban = 0.0
+        if ext_ban > now_ts and ext_ban > float(rec.get("ban", 0.0)):
+            rec["ban"] = ext_ban
+            self.state[key] = rec
 
         # Her isteği gözlemle (counter garanti)
         if self._suspicious is not None:
@@ -173,7 +198,7 @@ class QuarantineMiddleware(BaseHTTPMiddleware):
                     print("[quarantine] suspicious inc failed (ignored)")
 
         # 4) Ban kontrol
-        if rec["ban"] > now_ts:
+        if float(rec.get("ban", 0.0)) > now_ts:
             if self.debug:
                 print(f"[quarantine] BLOCK {key} -> {self.block_status}")
             # deterministik: blok anında sayaç artır
@@ -188,7 +213,12 @@ class QuarantineMiddleware(BaseHTTPMiddleware):
                 _inc_shadow_blocks()
             except Exception:
                 pass
-            self._update_gauge(now_ts, touch_key=key)
+            # aktif ban map’ini ve gauge’u güncelle
+            try:
+                _quarantine[key] = rec["ban"]
+            except Exception:
+                pass
+            self._recalc_ipcount(now_ts)
 
             # DB event write (blocked request while already banned)
             try:
@@ -248,7 +278,12 @@ class QuarantineMiddleware(BaseHTTPMiddleware):
                 _inc_shadow_blocks()
             except Exception:
                 pass
-            self._update_gauge(now_ts, touch_key=key)
+            # aktif ban map’ini ve gauge’u güncelle
+            try:
+                _quarantine[key] = rec["ban"]
+            except Exception:
+                pass
+            self._recalc_ipcount(now_ts)
 
             # DB event write (ban just set)
             try:
@@ -294,3 +329,28 @@ class QuarantineMiddleware(BaseHTTPMiddleware):
         self._update_gauge(now_ts)
 
         return await call_next(request)
+
+    def _prune(self, now_ts: float) -> None:
+        try:
+            alive = 0
+            dead = []
+            for k, r in list(self.state.items()):
+                if r.get("ban", 0.0) > now_ts:
+                    alive += 1
+                else:
+                    dead.append(k)
+            for k in dead:
+                self.state.pop(k, None)
+            if self._ipcount is not None:
+                self._ipcount.set(float(alive))
+        except Exception:
+            pass
+
+    def _recalc_ipcount(self, now_ts: float) -> None:
+        """Gauge’u self.state’ten canlı ban sayısına göre deterministik hesapla."""
+        try:
+            alive = sum(1 for r in self.state.values() if r.get("ban", 0.0) > now_ts)
+            if self._ipcount is not None:
+                self._ipcount.set(float(alive))
+        except Exception:
+            pass
