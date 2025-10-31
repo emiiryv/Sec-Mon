@@ -1,12 +1,16 @@
 import os
 import time
 import hashlib
+import asyncio
 from collections import defaultdict, deque
 from typing import Deque, Dict
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+
 from starlette.responses import Response
+# Alerts (optional, new path)
+from app.alerts import AlertManager, make_payload  # noqa: F401
 
 __all__ = ["MonitorMiddleware"]
 
@@ -130,6 +134,24 @@ class MonitorMiddleware(BaseHTTPMiddleware):
 
             if self.quarantine_enabled:
                 _quarantine_ip(ip_h, self.quarantine_seconds)
+                # Alert (fire-and-forget): rate abuse eşiği aşıldı
+                try:
+                    alerts = getattr(request.app.state, "alerts", None)
+                    if alerts is not None:
+                        meta = {"count": len(bucket), "win": self.rate_window}
+                        asyncio.create_task(
+                            alerts.emit(
+                                make_payload(
+                                    "rate_abuse",
+                                    ip_h,
+                                    request.url.path,
+                                    "threshold_exceeded",
+                                    meta,
+                                )
+                            )
+                        )
+                except Exception:
+                    pass
 
         # İsteği devam ettir
         response: Response = await call_next(request)

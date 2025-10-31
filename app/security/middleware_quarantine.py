@@ -4,6 +4,8 @@ import time
 import hashlib
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import PlainTextResponse
+from app.alerts import make_payload
+import asyncio
 from typing import Optional, Dict, Any, Dict as _Dict
 from app.db.session import SessionLocal
 from app.repositories.events import insert_event
@@ -206,6 +208,16 @@ class QuarantineMiddleware(BaseHTTPMiddleware):
                 if self.debug:
                     print(f"[quarantine] event write failed: {e}")
 
+            # Alert (fire-and-forget) for active ban block
+            try:
+                alerts = getattr(request.app.state, "alerts", None)
+                if alerts is not None:
+                    asyncio.create_task(alerts.emit(
+                        make_payload("quarantine_block", key, request.url.path, "active_ban")
+                    ))
+            except Exception:
+                pass
+
             resp = PlainTextResponse("Blocked by quarantine", status_code=self.block_status)
             resp.headers["X-Quarantine"] = "1"
             return resp
@@ -261,6 +273,17 @@ class QuarantineMiddleware(BaseHTTPMiddleware):
             except Exception as e:
                 if self.debug:
                     print(f"[quarantine] event write failed: {e}")
+
+            # Alert (fire-and-forget) when ban is set due to threshold
+            try:
+                alerts = getattr(request.app.state, "alerts", None)
+                if alerts is not None:
+                    meta = {"count": rec["c"], "threshold": self.threshold}
+                    asyncio.create_task(alerts.emit(
+                        make_payload("quarantine_block", key, request.url.path, "ban_set", meta)
+                    ))
+            except Exception:
+                pass
 
             resp = PlainTextResponse("Blocked by quarantine", status_code=self.block_status)
             resp.headers["X-Quarantine"] = "1"

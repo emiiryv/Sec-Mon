@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 load_dotenv()  # .env'yi import zincirinden önce yükle
+import os
 
 
 # app/main.py
@@ -16,6 +17,7 @@ from app.services.retention import run_retention
 from app.api.routes_debug import router as debug_router
 from app.api.routes_metrics import router as metrics_router
 from app.metrics import get_metrics
+from app.alerts import AlertManager
 
 
 # --- Ana app
@@ -24,6 +26,30 @@ app = FastAPI(title="Sec-Mon")
 # ---- Metrics: tek kez kur ve app.state'e sabitle ----
 _metrics = get_metrics()
 app.state.secmon_metrics = _metrics
+
+# ---- ALERTS: tek instance (opsiyonel sink ile)
+app.state.alerts = AlertManager(
+    cooldown_seconds=int(os.getenv("ALERT_COOLDOWN_SECONDS", "60")),
+    keep_recent=int(os.getenv("ALERT_KEEP_RECENT", "200")),
+)
+try:
+    from app.alerts.sinks import StdoutSink  # type: ignore
+    app.state.alerts.register(StdoutSink())
+except Exception:
+    # StdoutSink tanımlı değilse sorun değil; uygulama normal çalışsın
+    pass
+try:
+    if os.getenv("ALERT_FILE_PATH"):
+        from app.alerts.sinks import FileSink  # type: ignore
+        app.state.alerts.register(FileSink(os.getenv("ALERT_FILE_PATH")))
+except Exception:
+    pass
+try:
+    if os.getenv("ALERT_WEBHOOK_URL"):
+        from app.alerts.sinks import WebhookSink  # type: ignore
+        app.state.alerts.register(WebhookSink(os.getenv("ALERT_WEBHOOK_URL")))
+except Exception:
+    pass
 
 # 2) Debug config endpoint (istediğin gibi)
 @app.get("/_debug/config")
@@ -48,6 +74,11 @@ def health():
 # 4) (Varsa) diğer router import/include'ların burada kalsın
 # from app.api.routes_events import router as events_router
 app.include_router(metrics_router)
+try:
+    from app.api.routes_debug_alerts import router as debug_alerts_router
+    app.include_router(debug_alerts_router)
+except Exception:
+    pass
 app.include_router(events_router)
 app.include_router(stats_router)
 
