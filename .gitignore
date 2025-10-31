@@ -123,3 +123,12 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+
+# Sprint 6 – convenience ignores
+/.venv
+/.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+alerts.log

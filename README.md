@@ -58,6 +58,37 @@ uvicorn app.main:app --reload
 # App: http://127.0.0.1:8000
 ```
 
+## Quickstart (Local)
+
+```bash
+cp .env.example .env
+make dev           # API: http://127.0.0.1:8000
+```
+
+## Observability Stack (Prometheus + Grafana)
+
+```bash
+make obs-up
+# Prometheus: http://localhost:9090
+# Grafana:    http://localhost:3000  (admin/admin)
+```
+
+Grafana auto-provisioning açık; `ops/grafana/dashboard_secmon.json` otomatik yüklenir.
+
+## Demo
+
+```bash
+make demo
+# Son alert'ler:    curl -s http://127.0.0.1:8000/_debug/alerts?limit=50 | jq
+# Metrikler:        curl -s http://127.0.0.1:8000/metrics | head
+```
+
+## Testler
+
+```bash
+make test
+```
+
 ## Endpoint’ler
 - `GET /health` — basit sağlık kontrolü.
 - `GET /metrics` — Prometheus metrikleri (ana app’ten ayrı **mount**, karantinadan muaf).
