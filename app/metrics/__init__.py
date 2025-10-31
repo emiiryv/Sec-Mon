@@ -10,6 +10,16 @@ if hasattr(builtins, _KEY):
     SUSPICIOUS_REQUESTS = _store["suspicious"]
     QUARANTINED_BLOCKS = _store["blocked"]
     QUARANTINED_IP_COUNT = _store["ipcount"]
+    ZSCORE_ANOMALIES = _store.get("zscore")
+    if ZSCORE_ANOMALIES is None:
+        ZSCORE_ANOMALIES = Counter(
+            "zscore_anomaly_total",
+            "Z-score based anomaly detections",
+            ["client"],
+            registry=METRICS_REGISTRY,
+        )
+        _store["zscore"] = ZSCORE_ANOMALIES
+    ZSCORE_ANOMALIES.labels(client="init").inc(0)
 else:
     METRICS_REGISTRY = _DEFAULT_REGISTRY
     SUSPICIOUS_REQUESTS = Counter(
@@ -32,6 +42,13 @@ else:
     SUSPICIOUS_REQUESTS.labels(client="init").inc(0)
     QUARANTINED_BLOCKS.labels(client="init").inc(0)
     QUARANTINED_IP_COUNT.set(0)
+    ZSCORE_ANOMALIES = Counter(
+        "zscore_anomaly_total",
+        "Z-score based anomaly detections",
+        ["client"],
+        registry=METRICS_REGISTRY,
+    )
+    ZSCORE_ANOMALIES.labels(client="init").inc(0)
 
     setattr(
         builtins,
@@ -41,6 +58,7 @@ else:
             suspicious=SUSPICIOUS_REQUESTS,
             blocked=QUARANTINED_BLOCKS,
             ipcount=QUARANTINED_IP_COUNT,
+            zscore=ZSCORE_ANOMALIES,
         ),
     )
 
@@ -50,4 +68,5 @@ def get_metrics() -> dict:
         "suspicious": SUSPICIOUS_REQUESTS,
         "blocked": QUARANTINED_BLOCKS,
         "ipcount": QUARANTINED_IP_COUNT,
+        "zscore": ZSCORE_ANOMALIES,
     }

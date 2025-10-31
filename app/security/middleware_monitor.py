@@ -9,10 +9,14 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from starlette.responses import Response
-from app.metrics import SUSPICIOUS_REQUESTS
+from app.metrics import SUSPICIOUS_REQUESTS, ZSCORE_ANOMALIES
 from app.security.ip_utils import get_client_info, is_allowlisted
 # Alerts (optional, new path)
 from app.alerts import AlertManager, make_payload  # noqa: F401
+from app.anomaly.zscore import ZScoreWindow
+
+# Z-score: client başına son alert attığımız bucket index (floor(now / bucket_sec))
+_Z_BUCKET_LAST_ALERT: Dict[str, int] = {}
 
 # Quarantine paylaşılan ban haritası (metrics fallback bu map'i okur)
 try:
@@ -90,6 +94,7 @@ def _quarantine_ip(ip_hash: str, seconds: int) -> None:
 # --- Rate limitleme state'i (in-memory) -------------------------------------
 # ip_hash -> deque[timestamps]
 _RATE_BUCKETS: Dict[str, Deque[float]] = defaultdict(deque)
+_ZSCORE_BY_CLIENT: Dict[str, ZScoreWindow] = {}
 
 
 class MonitorMiddleware(BaseHTTPMiddleware):
@@ -107,6 +112,12 @@ class MonitorMiddleware(BaseHTTPMiddleware):
         self.rate_threshold = _env_int("RATE_THRESHOLD", 20)
         self.quarantine_enabled = _env_bool("QUARANTINE_ENABLED", False)
         self.quarantine_seconds = _env_int("QUARANTINE_BAN_SECONDS", 600)
+        # Z-score env
+        self.z_enabled = _env_bool("ZSCORE_ENABLED", False)
+        self.z_bucket_sec = _env_int("ZSCORE_BUCKET_SEC", 2)
+        self.z_window_min = _env_int("ZSCORE_WINDOW_MIN", 15)
+        self.z_min_samples = _env_int("ZSCORE_MIN_SAMPLES", 5)
+        self.z_threshold = float(os.getenv("ZSCORE_THRESHOLD", "3.0"))
 
     async def dispatch(self, request: Request, call_next):
         ip, ip_h = get_client_info(request)
@@ -180,6 +191,40 @@ class MonitorMiddleware(BaseHTTPMiddleware):
                         )
                 except Exception:
                     pass
+
+        # 3) Z-score anomali (client-bazlı)
+        if self.z_enabled:
+            zs = _ZSCORE_BY_CLIENT.get(ip_h)
+            if zs is None:
+                zs = ZScoreWindow(
+                    bucket_sec=self.z_bucket_sec,
+                    window_min=self.z_window_min,
+                    min_samples=self.z_min_samples,
+                    threshold=self.z_threshold,
+                )
+                _ZSCORE_BY_CLIENT[ip_h] = zs
+            z, is_anom = zs.add_hit(now)
+            if is_anom:
+                bidx = int(now // max(self.z_bucket_sec, 1))
+                if _Z_BUCKET_LAST_ALERT.get(ip_h) != bidx:
+                    _Z_BUCKET_LAST_ALERT[ip_h] = bidx
+                    # 1) metrik
+                    try:
+                        ZSCORE_ANOMALIES.labels(client=ip_h).inc()
+                    except Exception:
+                        pass
+                    # 2) alert (fire-and-forget)
+                    try:
+                        alerts = getattr(request.app.state, "alerts", None)
+                        if alerts is not None:
+                            meta = {"z": z, "threshold": self.z_threshold, "bucket": bidx}
+                            asyncio.create_task(
+                                alerts.emit(
+                                    make_payload("zscore_anomaly", ip_h, request.url.path, "z_exceeded", meta)
+                                )
+                            )
+                    except Exception:
+                        pass
 
         # İsteği devam ettir
         response: Response = await call_next(request)
