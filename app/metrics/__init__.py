@@ -1,72 +1,25 @@
 # app/metrics/__init__.py
-import builtins
-from prometheus_client import REGISTRY as _DEFAULT_REGISTRY, Counter, Gauge
+"""
+Thin re-export layer to avoid duplicating singleton/registry logic.
+All metrics are created and stored in app.metrics.registry; this module just
+re-exports them for convenient imports like `from app.metrics import ...`.
+"""
+from .registry import (
+    METRICS_REGISTRY,
+    SUSPICIOUS_REQUESTS,
+    QUARANTINED_BLOCKS,
+    QUARANTINED_IP_COUNT,
+    ZSCORE_ANOMALIES,
+    REQUEST_LATENCY,
+    get_metrics,
+)
 
-_KEY = "_secmon_metrics_singleton_v3"
-
-if hasattr(builtins, _KEY):
-    _store = getattr(builtins, _KEY)
-    METRICS_REGISTRY = _store["registry"]
-    SUSPICIOUS_REQUESTS = _store["suspicious"]
-    QUARANTINED_BLOCKS = _store["blocked"]
-    QUARANTINED_IP_COUNT = _store["ipcount"]
-    ZSCORE_ANOMALIES = _store.get("zscore")
-    if ZSCORE_ANOMALIES is None:
-        ZSCORE_ANOMALIES = Counter(
-            "zscore_anomaly_total",
-            "Z-score based anomaly detections",
-            ["client"],
-            registry=METRICS_REGISTRY,
-        )
-        _store["zscore"] = ZSCORE_ANOMALIES
-    ZSCORE_ANOMALIES.labels(client="init").inc(0)
-else:
-    METRICS_REGISTRY = _DEFAULT_REGISTRY
-    SUSPICIOUS_REQUESTS = Counter(
-        "suspicious_requests_total",
-        "Requests observed by quarantine middleware",
-        ["client"],
-        registry=METRICS_REGISTRY,
-    )
-    QUARANTINED_BLOCKS = Counter(
-        "quarantined_blocks_total",
-        "Requests blocked by quarantine middleware",
-        ["client"],
-        registry=METRICS_REGISTRY,
-    )
-    QUARANTINED_IP_COUNT = Gauge(
-        "quarantined_ip_count",
-        "Currently quarantined unique clients",
-        registry=METRICS_REGISTRY,
-    )
-    SUSPICIOUS_REQUESTS.labels(client="init").inc(0)
-    QUARANTINED_BLOCKS.labels(client="init").inc(0)
-    QUARANTINED_IP_COUNT.set(0)
-    ZSCORE_ANOMALIES = Counter(
-        "zscore_anomaly_total",
-        "Z-score based anomaly detections",
-        ["client"],
-        registry=METRICS_REGISTRY,
-    )
-    ZSCORE_ANOMALIES.labels(client="init").inc(0)
-
-    setattr(
-        builtins,
-        _KEY,
-        dict(
-            registry=METRICS_REGISTRY,
-            suspicious=SUSPICIOUS_REQUESTS,
-            blocked=QUARANTINED_BLOCKS,
-            ipcount=QUARANTINED_IP_COUNT,
-            zscore=ZSCORE_ANOMALIES,
-        ),
-    )
-
-def get_metrics() -> dict:
-    return {
-        "registry": METRICS_REGISTRY,
-        "suspicious": SUSPICIOUS_REQUESTS,
-        "blocked": QUARANTINED_BLOCKS,
-        "ipcount": QUARANTINED_IP_COUNT,
-        "zscore": ZSCORE_ANOMALIES,
-    }
+__all__ = [
+    "METRICS_REGISTRY",
+    "SUSPICIOUS_REQUESTS",
+    "QUARANTINED_BLOCKS",
+    "QUARANTINED_IP_COUNT",
+    "ZSCORE_ANOMALIES",
+    "REQUEST_LATENCY",
+    "get_metrics",
+]

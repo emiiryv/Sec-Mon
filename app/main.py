@@ -21,7 +21,15 @@ from app.alerts import AlertManager
 
 
 # --- Ana app
+
 app = FastAPI(title="Sec-Mon")
+
+# Latency middleware'ı en dış katmana ekleyelim
+try:
+    from app.observability.middleware_latency import LatencyMiddleware
+    app.add_middleware(LatencyMiddleware)
+except Exception:
+    pass
 
 # ---- Metrics: tek kez kur ve app.state'e sabitle ----
 _metrics = get_metrics()

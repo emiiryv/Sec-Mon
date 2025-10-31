@@ -1,6 +1,6 @@
 from __future__ import annotations
 import builtins
-from prometheus_client import CollectorRegistry, Counter, Gauge
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
 _KEY = "_secmon_metrics_singleton_v3"
 
@@ -11,6 +11,17 @@ if hasattr(builtins, _KEY):
     QUARANTINED_BLOCKS = _store["blocked"]
     QUARANTINED_IP_COUNT = _store["ipcount"]
     ZSCORE_ANOMALIES = _store.get("zscore")
+    REQUEST_LATENCY = _store.get("latency")
+    if REQUEST_LATENCY is None:
+        from prometheus_client import Histogram  # local import to avoid unused in other branch
+        REQUEST_LATENCY = Histogram(
+            "request_latency_seconds",
+            "Request processing time in seconds",
+            ["route", "method", "status"],
+            registry=METRICS_REGISTRY,
+            buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
+        )
+        _store["latency"] = REQUEST_LATENCY
     if ZSCORE_ANOMALIES is None:
         from prometheus_client import Counter  # local import to avoid unused in other branch
         ZSCORE_ANOMALIES = Counter(
@@ -46,6 +57,13 @@ else:
         ["client"],
         registry=METRICS_REGISTRY,
     )
+    REQUEST_LATENCY = Histogram(
+        "request_latency_seconds",
+        "Request processing time in seconds",
+        ["route", "method", "status"],
+        registry=METRICS_REGISTRY,
+        buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
+    )
     SUSPICIOUS_REQUESTS.labels(client="init").inc(0)
     QUARANTINED_BLOCKS.labels(client="init").inc(0)
     QUARANTINED_IP_COUNT.set(0)
@@ -59,6 +77,7 @@ else:
             blocked=QUARANTINED_BLOCKS,
             ipcount=QUARANTINED_IP_COUNT,
             zscore=ZSCORE_ANOMALIES,
+            latency=REQUEST_LATENCY,
         ),
     )
 
@@ -70,4 +89,5 @@ def get_metrics() -> dict[str, object]:
         "blocked": QUARANTINED_BLOCKS,
         "ipcount": QUARANTINED_IP_COUNT,
         "zscore": ZSCORE_ANOMALIES,
+        "latency": REQUEST_LATENCY,
     }
