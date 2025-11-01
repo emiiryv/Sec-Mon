@@ -25,7 +25,7 @@ dev:
 	uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 test:
-	PYTHONPATH=$$(pwd) pytest -q
+	ENV=test PYTHONPATH=$$(pwd) pytest -q
 
 demo:
 	BASE_URL=$${BASE_URL:-http://127.0.0.1:8000} \

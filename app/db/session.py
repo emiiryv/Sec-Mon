@@ -1,27 +1,25 @@
 # app/db/session.py
 import os
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL or "asyncpg" not in DATABASE_URL:
     raise RuntimeError("DATABASE_URL (asyncpg) env değişkeni gerekli, örn: postgresql+asyncpg://user:pass@localhost:5432/secmon")
 
-is_test = os.getenv("APP_ENV") == "test" or os.getenv("PYTEST_CURRENT_TEST") is not None
+# TEST tespiti: pytest veya ENV=test/ci ise havuzu kapat (loop çakışmasını önler)
+_IS_TEST = bool(os.getenv("PYTEST_CURRENT_TEST")) or os.getenv("ENV") in {"test", "ci"}
 
-engine_kwargs = dict(
-    echo=False,
-    pool_pre_ping=True,
-)
+ENGINE_OPTS = {"echo": False, "future": True, "pool_pre_ping": True}
 
-if is_test:
-    # Her test çağrısında yeni bağlantı, loop karışmasın
-    engine_kwargs["poolclass"] = NullPool
+if _IS_TEST:
+    # Her çağrıda yeni bağlantı: farklı event loop'larda güvenli
+    ENGINE_OPTS["poolclass"] = NullPool
 
-engine = create_async_engine(DATABASE_URL, **engine_kwargs)
+engine = create_async_engine(DATABASE_URL, **ENGINE_OPTS)
 
-SessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False, autoflush=False, autocommit=False)
+SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
-async def get_session():
+async def get_session() -> AsyncSession:
     async with SessionLocal() as session:
         yield session
